@@ -9,6 +9,7 @@
 body{display:flex;flex-direction:column}
 .bar{display:flex;gap:6px;padding:8px;flex-wrap:wrap;align-items:center;background:var(--card)}
 select,button{background:var(--bg);color:var(--fg);border:1px solid var(--ln);border-radius:6px;padding:7px;font-size:13px}
+button.active{background:var(--acc);color:#000;border-color:var(--acc);font-weight:600}
 #dot{width:9px;height:9px;border-radius:50%;background:#555;margin-left:auto}#dot.on{background:var(--g);animation:b 1.2s infinite}
 @keyframes b{50%{opacity:.3}}
 #spot{font-weight:700;color:var(--acc)}
@@ -24,22 +25,47 @@ tr.ic td.ce,tr.ip td.pe{background:#161c24}
 .st{padding:5px 10px;color:var(--mut);font-size:12px;background:var(--card)}.st b{color:var(--acc)}
 #cv{position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;z-index:5;padding-top:env(safe-area-inset-top)}
 #wrap{position:relative;flex:1;min-height:0}#chart,#ov{position:absolute;inset:0}#ov{pointer-events:none}
+/* Premium Profile table */
+#ptbl{display:none;flex:1;overflow:auto;padding:0 8px 12px}
+#ptbl table{min-width:0;width:100%}
+#ptbl th{text-align:left;padding:10px 8px;font-size:12px;border-bottom:1px solid var(--ln)}
+#ptbl th:last-child,#ptbl td:last-child{text-align:right}
+#ptbl td{padding:9px 8px;text-align:left;border-bottom:1px solid #1a1f27}
+#ptbl tr.poc td{background:rgba(245,166,35,.12);color:var(--acc);font-weight:600}
+#ptbl .pos{color:var(--g)}#ptbl .neg{color:var(--r)}
+#ptbl .pct{color:var(--mut);font-size:12px}
+.sortbtns{display:flex;gap:6px;margin-left:auto}
 </style></head><body>
 <div class="bar">
  <select id="und"><option value="13|IDX_I|NSE_FNO">NIFTY</option><option value="25|IDX_I|NSE_FNO">BANKNIFTY</option><option value="27|IDX_I|NSE_FNO">FINNIFTY</option><option value="442|IDX_I|NSE_FNO">MIDCPNIFTY</option><option value="51|IDX_I|BSE_FNO">SENSEX</option></select>
  <select id="exp"></select>
- <select id="win"><option value="8">±8 strikes</option><option value="15" selected>±15</option><option value="999">All</option></select>
+ <select id="win"><option value="8">±8 strikes</option><option value="12" selected>±12</option><option value="20">±20</option><option value="40">All</option></select>
  <span id="spot"></span><span id="dot"></span>
 </div>
-<div id="tw"><table><thead><tr><th>OI</th><th>ΔOI</th><th>IV</th><th>LTP</th><th>STRIKE</th><th>LTP</th><th>IV</th><th>ΔOI</th><th>OI</th></tr></thead><tbody id="tb"></tbody></table></div>
+<div id="tw"><table><thead><tr><th>CE OI</th><th>ΔOI</th><th>IV</th><th>CE LTP</th><th>Strike</th><th>PE LTP</th><th>IV</th><th>ΔOI</th><th>PE OI</th></tr></thead><tbody id="tb"></tbody></table></div>
 <div class="st" id="st">Loading…</div>
 
 <div id="cv">
- <div class="bar"><button onclick="closeChart()">← Chain</button><b id="ctitle"></b>
+ <div class="bar">
+  <button onclick="closeChart()">← Chain</button>
+  <b id="ctitle"></b>
   <select id="intv"><option>1</option><option selected>5</option><option>15</option></select>
   <select id="mode"><option value="built">Built OI</option><option value="raw">Raw OI</option></select>
-  <select id="tick"><option>1</option><option selected>2</option><option>5</option></select></div>
+  <select id="tick"><option>1</option><option selected>2</option><option>5</option></select>
+  <button id="btnChart" class="active" onclick="showView('chart')">Chart</button>
+  <button id="btnTable" onclick="showView('table')">Premium Profile</button>
+  <div class="sortbtns" id="sortbtns" style="display:none">
+   <button id="btnAsc" onclick="setSort('asc')">↑ Ascending</button>
+   <button id="btnDesc" class="active" onclick="setSort('desc')">↓ Descending</button>
+  </div>
+ </div>
  <div id="wrap"><div id="chart"></div><canvas id="ov"></canvas></div>
+ <div id="ptbl">
+  <table>
+   <thead><tr><th>Premium range</th><th>OI generated</th><th>% of total</th></tr></thead>
+   <tbody id="ptbody"></tbody>
+  </table>
+ </div>
  <div class="st" id="st2"></div>
 </div>
 <script>
@@ -49,25 +75,18 @@ const PROXY='https://YOUR-WORKER.YOURNAME.workers.dev';
 const DEMO=PROXY.includes('YOUR-WORKER'),$=id=>document.getElementById(id);
 const fmt=n=>n==null?'-':Math.abs(n)>=1e5?(n/1e5).toFixed(2)+'L':n.toLocaleString('en-IN');
 const post=async(p,b)=>{const r=await fetch(PROXY+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
- if(!r.ok)throw new Error('HTTP '+r.status+' '+(await r.text()).slice(0,90));return r.json()};
-const und=()=>{const [id,seg,fno]=$('und').value.split('|');return{id:+id,seg,fno,name:$('und').selectedOptions[0].text}};
+ if(!r.ok)throw new Error(await r.text());return r.json()};
+const und=()=>{const[v,s,f]=$('und').value.split('|');return{id:+v,seg:s,fno:f,name:$('und').selectedOptions[0].text}};
+const ist=()=>new Date().toLocaleString('sv-SE',{timeZone:'Asia/Kolkata'}).replace(' ','T');
+const toTs=t=>{const d=new Date(t);return Math.floor(d.getTime()/1000)};
+let chain=null,sortDir='desc',viewMode='chart';
 
-/* ---------- demo data ---------- */
-function demoExpiries(){const a=[],d=new Date();d.setDate(d.getDate()+((4-d.getDay()+7)%7||7));
- for(let i=0;i<5;i++){a.push(d.toISOString().slice(0,10));d.setDate(d.getDate()+7)}return a}
-function demoChain(){const spot=24800+Math.round(Math.random()*20),oc={},step=50,base=Math.round(spot/step)*step;
- for(let k=base-1000;k<=base+1000;k+=step){const dist=Math.abs(k-spot),tv=Math.max(5,120-dist*.12),
-  ce=Math.max(0,spot-k)+tv,pe=Math.max(0,k-spot)+tv,w=Math.exp(-dist/400),rnd=()=>.8+Math.random()*.4;
-  const mk=(t,l)=>({security_id:k*10+t,last_price:+(l*rnd()).toFixed(2),oi:Math.round(2e6*w*rnd()),previous_oi:Math.round(1.9e6*w),implied_volatility:+(12+dist/100).toFixed(1)});
-  oc[k+'.000000']={ce:mk(1,ce),pe:mk(2,pe)}}
- return{data:{last_price:spot,oc}}}
-
-/* ---------- option chain ---------- */
-let chain=null;
 async function loadExpiries(){
- const u=und();
- const list=DEMO?demoExpiries():(await post('/optionchain/expirylist',{UnderlyingScrip:u.id,UnderlyingSeg:u.seg})).data;
- $('exp').innerHTML=list.map(e=>`<option>${e}</option>`).join('');loadChain();
+ try{
+  const u=und(),j=DEMO?{data:['2026-10-21','2026-10-28','2026-11-25']}:await post('/optionchain/expirylist',{UnderlyingScrip:u.id,UnderlyingSeg:u.seg});
+  $('exp').innerHTML=(j.data||[]).map(e=>`<option>${e}</option>`).join('');
+  await loadChain();
+ }catch(e){$('st').textContent='Error: '+e.message}
 }
 async function loadChain(){
  try{
@@ -93,31 +112,67 @@ function renderChain(){
   return `<tr class="${k===atm?'atm':''} ${k<spot?'ic':''} ${k>spot?'ip':''}">${bar(c.oi,'ce')}${dd(cd)}${cell(iv(c),'ce')}${tap(c,'CE')}<td class="k">${k}</td>${tap(p,'PE')}${cell(iv(p),'pe')}${dd(pd)}${bar(p.oi,'pe')}</tr>`}).join('');
 }
 $('und').onchange=loadExpiries;$('exp').onchange=loadChain;$('win').onchange=()=>chain&&renderChain();
-setInterval(()=>{if($('cv').style.display!=='flex')loadChain()},5000);   // Dhan chain limit ≈ 1 req / 3 s
+setInterval(()=>{if($('cv').style.display!=='flex')loadChain()},5000);
 
 /* ---------- chart + OI profile ---------- */
 let chart,candles,bars=[],oi=[],prof=null,ctimer=null,cur=null,first=true,dsim=null;
 function initChart(){
  chart=LightweightCharts.createChart($('chart'),{layout:{background:{color:'#0e1116'},textColor:'#d7dde6'},
   grid:{vertLines:{color:'#1a1f27'},horzLines:{color:'#1a1f27'}},timeScale:{timeVisible:true,rightOffset:12},rightPriceScale:{borderColor:'#2a313c'},autoSize:true});
- candles=chart.addCandlestickSeries({upColor:'#26a69a',downColor:'#ef5350',wickUpColor:'#26a69a',wickDownColor:'#ef5350',borderVisible:false});
- draw();
+ candles=chart.addCandlestickSeries({upColor:'#26a69a',downColor:'#ef5350',borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'});
 }
 function openChart(sid,title,ltp){
- cur={sid,ltp};$('ctitle').textContent=und().name+' '+$('exp').value+' '+title;$('cv').style.display='flex';
- if(!chart)initChart();bars=[];oi=[];prof=null;dsim=null;first=true;candles.setData([]);
- clearInterval(ctimer);cRefresh();ctimer=setInterval(cRefresh,5000);
+ cur={sid,title,ltp};first=true;bars=[];oi=[];prof=null;dsim=null;
+ $('ctitle').textContent=title;$('cv').style.display='flex';
+ if(!chart)initChart();
+ showView('chart');
+ cRefresh();ctimer=setInterval(cRefresh,15000);draw();
 }
-function closeChart(){clearInterval(ctimer);$('cv').style.display='none';loadChain()}
-['intv','mode','tick'].forEach(id=>$(id).onchange=()=>{if(id==='intv')first=true;cRefresh()});
-const ist=()=>new Date().toLocaleString('sv',{timeZone:'Asia/Kolkata'});
-const fixTs=t=>(t<1.2e9?t+315513000:t)+19800;
+function closeChart(){$('cv').style.display='none';clearInterval(ctimer);ctimer=null}
+function showView(v){
+ viewMode=v;
+ $('wrap').style.display=v==='chart'?'block':'none';
+ $('ptbl').style.display=v==='table'?'block':'none';
+ $('sortbtns').style.display=v==='table'?'flex':'none';
+ $('btnChart').classList.toggle('active',v==='chart');
+ $('btnTable').classList.toggle('active',v==='table');
+ if(v==='table')renderPremiumTable();
+}
+function setSort(dir){
+ sortDir=dir;
+ $('btnAsc').classList.toggle('active',dir==='asc');
+ $('btnDesc').classList.toggle('active',dir==='desc');
+ renderPremiumTable();
+}
+function renderPremiumTable(){
+ if(!prof||!prof.m){$('ptbody').innerHTML='<tr><td colspan="3">No data</td></tr>';return}
+ const tick=prof.tick,rows=[];
+ let total=0;
+ prof.m.forEach((v,k)=>{total+=Math.abs(v);rows.push({p:+k,v})});
+ rows.sort((a,b)=>sortDir==='asc'?a.p-b.p:b.p-a.p);
+ $('ptbody').innerHTML=rows.map(r=>{
+  const lo=r.p-tick/2,hi=r.p+tick/2;
+  const pct=total?((Math.abs(r.v)/total)*100).toFixed(1)+'%':'0.0%';
+  const cls=r.v>0?'pos':r.v<0?'neg':'';
+  const sign=r.v>0?'+':'';
+  const isPoc=String(r.p)===String(prof.poc);
+  return `<tr class="${isPoc?'poc':''}"><td>₹${lo.toFixed(0)} – ${hi.toFixed(0)}</td><td class="${cls}">${sign}${fmt(r.v)}</td><td class="pct">${pct}</td></tr>`;
+ }).join('');
+}
+function demoChain(){
+ const spot=24500+Math.round((Math.random()-.5)*80),oc={};
+ for(let k=spot-400;k<=spot+400;k+=50){
+  const ce={security_id:100000+k,last_price:Math.max(1,spot-k+Math.random()*30),oi:Math.round(1e5+Math.random()*5e5),previous_oi:Math.round(1e5+Math.random()*5e5),implied_volatility:12+Math.random()*20};
+  const pe={security_id:200000+k,last_price:Math.max(1,k-spot+Math.random()*30),oi:Math.round(1e5+Math.random()*5e5),previous_oi:Math.round(1e5+Math.random()*5e5),implied_volatility:12+Math.random()*20};
+  oc[k.toFixed(6)]={ce,pe};
+ }
+ return{data:{last_price:spot,oc}};
+}
 function demoStep(){
- const step=300,now=Math.floor(Date.now()/1000/step)*step+19800;
- if(!dsim){dsim={b:[],o:[]};let p=cur.ltp||100,o=800000;
-  for(let i=70;i>0;i--){const op=p;p=Math.max(1,p+(Math.random()-.5)*p*.03);
-   dsim.b.push({time:now-i*step,open:op,high:Math.max(op,p)*1.005,low:Math.min(op,p)*.995,close:p});o+=Math.round((Math.random()-.4)*30000);dsim.o.push(o)}}
- const b=dsim.b,l=b.at(-1);if(l.time<now){b.push({time:now,open:l.close,high:l.close,low:l.close,close:l.close});dsim.o.push(dsim.o.at(-1))}
+ if(!dsim){dsim={b:[],o:[]};let p=cur.ltp||100,o=5e5,t=Math.floor(Date.now()/1000)-3600;
+  for(let i=0;i<60;i++){t+=60;const op=p;p=Math.max(1,p*(1+(Math.random()-.5)*.02));
+   dsim.b.push({time:t,open:op,high:Math.max(op,p)*1.005,low:Math.min(op,p)*.995,close:p});o+=Math.round((Math.random()-.4)*30000);dsim.o.push(o)}}
+ const b=dsim.b,l=b.at(-1);if(l.time<Math.floor(Date.now()/1000)){b.push({time:Math.floor(Date.now()/1000),open:l.close,high:l.close,low:l.close,close:l.close});dsim.o.push(dsim.o.at(-1))}
  const c=b.at(-1);c.close=Math.max(1,c.close*(1+(Math.random()-.5)*.01));c.high=Math.max(c.high,c.close);c.low=Math.min(c.low,c.close);dsim.o[dsim.o.length-1]+=Math.round((Math.random()-.35)*5000);
  bars=b.map(x=>({...x}));oi=dsim.o.slice();
 }
@@ -125,7 +180,7 @@ async function cRefresh(){
  try{
   if(DEMO)demoStep();else{
    const j=await post('/charts/intraday',{securityId:String(cur.sid),exchangeSegment:und().fno,instrument:'OPTIDX',interval:$('intv').value,oi:true,fromDate:ist().slice(0,10)+' 09:15:00',toDate:ist()});
-   bars=[];oi=[];(j.close||[]).forEach((c,i)=>{bars.push({time:fixTs(j.timestamp[i]),open:j.open[i],high:j.high[i],low:j.low[i],close:c});oi.push(j.open_interest?j.open_interest[i]:0)});
+   bars=[];oi=[];(j.close||[]).forEach((c,i)=>{bars.push({time:toTs(j.timestamp[i]),open:j.open[i],high:j.high[i],low:j.low[i],close:c});oi.push(j.open_interest?j.open_interest[i]:0)});
   }
   if(!bars.length){$('st2').textContent='No data returned';return}
   candles.setData(bars);if(first){chart.timeScale().fitContent();first=false}
@@ -133,6 +188,7 @@ async function cRefresh(){
   bars.forEach((b,i)=>{const k=(Math.round(b.close/tick)*tick).toFixed(2);mode==='raw'?m.set(k,oi[i]):m.set(k,(m.get(k)||0)+(i?oi[i]-oi[i-1]:0))});
   let max=0,poc=null;m.forEach((v,k)=>{if(v>max){max=v;poc=k}});prof={m,max,poc,tick};
   const l=bars.at(-1);$('st2').innerHTML=`LTP <b>${l.close.toFixed(2)}</b> · OI <b>${fmt(oi.at(-1))}</b> · OI-POC <b>₹${poc??'-'}</b> · ${new Date().toLocaleTimeString()}`;
+  if(viewMode==='table')renderPremiumTable();
  }catch(e){$('st2').textContent='Error: '+e.message}
 }
 const cv=$('ov'),cx=cv.getContext('2d');
@@ -140,7 +196,7 @@ function draw(){
  const w=$('wrap'),dpr=devicePixelRatio||1,W=w.clientWidth,H=w.clientHeight;
  if(cv.width!==W*dpr||cv.height!==H*dpr){cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px'}
  cx.setTransform(dpr,0,0,dpr,0,0);cx.clearRect(0,0,W,H);cx.font='11px system-ui';
- if(prof&&prof.max>0){const x0=W-chart.priceScale('right').width(),maxW=W*.35;
+ if(prof&&prof.max>0&&viewMode==='chart'){const x0=W-chart.priceScale('right').width(),maxW=W*.35;
   prof.m.forEach((v,k)=>{if(v<=0)return;const p=+k,y1=candles.priceToCoordinate(p+prof.tick/2),y2=candles.priceToCoordinate(p-prof.tick/2);if(y1==null||y2==null)return;
    const r=v/prof.max,len=maxW*r,poc=k===prof.poc,y=(y1+y2)/2;
    cx.fillStyle=poc?'rgba(245,166,35,.85)':r>=.7?'rgba(38,166,154,.65)':r<=.2?'rgba(239,83,80,.35)':'rgba(125,135,149,.4)';
